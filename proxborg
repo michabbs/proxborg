@@ -1,0 +1,856 @@
+#!/bin/bash
+# proxborg 1.0
+# Copyright (c) 2020, Przemyslaw Kwiatkowski
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+#    list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+#    contributors may be used to endorse or promote products derived from
+#    this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+## CONFIGURATION
+
+# Edit here or provide values in environment.
+#export BORG_REPO='ssh://where/is/repo'
+#export BORG_PASSPHRASE=pass1234
+
+# You may want to add another borg configuration variables, for example
+# BORG_KEY_FILE, BORG_BASE_DIR or BORG_FILES_CACHE_TTL.
+# Remember to *export* them, as shown above!
+# See more: https://borgbackup.readthedocs.io/en/stable/usage/general.html
+
+
+# Exta borg options. This is good place to set compression level.
+# Consider adding options like --exclude-caches, --exclude-nodump
+# or --remote-ratelimit.
+# Add --progress if you want to see more info during backup process.
+# Add --list for list of all backed up files.
+# See more: https://borgbackup.readthedocs.io/en/stable/usage/create.html
+#BORG_OPTS="--compression auto,zstd"
+#BORG_OPTS="--compression auto,lzma,9"
+#BORG_OPTS="--progress --compression auto,lzma,9"
+#BORG_OPTS="--compression=lz4 --list --remote-ratelimit 9000"
+#BORG_OPTS="--compression=auto,lzma,9 --exclude-caches --list"
+#BORG_OPTS="--compression=lz4 --exclude-caches --exclude-nodump --progress"
+#BORG_OPTS="--compression=lz4 --exclude-caches"
+#BORG_OPTS="--compression=lz4 --list --progress"
+
+# Set if you want to prune old archives automatically after successful backup.
+#PRUNE_OPTS="--keep-last=2 --keep-daily=7 --keep-weekly=6"
+#PRUNE_OPTS="--keep-last=2"
+
+# Set to "1" to enable pruning also when backup finished with warnings.
+#PRUNE_ON_WARNINGS=1
+
+# Stop processing if error occured.
+# If unset - try to go ahead with remaining tasks.
+#EXIT_ON_ERRORS=1
+
+# Set to "1" to include vm hostname in name of borg archive.
+#HOSTNAME_IN_ARCHIVENAME=1
+
+# Show borg repository information at the end.
+#SHOW_SUMMARY=1
+
+# Snaphot name to be used (usually no need to set this).
+#SNAPNAME="proxborg"
+
+# Extra vzdump options.
+# If you have custom settings in /etc/vzdump.conf - it is good place to supersede them.
+# Remove --quiet if you want to see vzdump messages.
+#VZDUMP_OPTS="--quiet --mailnotification failure --mailto root@localhost --script /bin/true"
+VZDUMP_OPTS="--quiet"
+
+
+## PREREQUISITES
+#
+# 1. This script requires jq binary. Install it:
+#	apt install jq
+#
+# 2. This script requires fuse-overlayfs. Version at least 1.0 is *recommended*.
+#    Unfortunately at the time of writing the newest version provided by Proxmox
+#    (or actually by Debian Buster) is 0.3. You may try it (apt install fuse-overlayfs),
+#    but better simply download newer package from Debian Bullseye. Look here:
+#    https://packages.debian.org/bullseye/fuse-overlayfs for available version.
+#	Example:
+#	wget http://ftp.us.debian.org/debian/pool/main/f/fuse-overlayfs/fuse-overlayfs_1.0.0-1_amd64.deb
+#	dpkg -i fuse-overlayfs_1.0.0-1_amd64.deb
+#
+# 3. This script should be run as root.
+#
+
+
+## GENERAL INFO
+#
+# This script automates backup of Proxmox vm's (both qemu and lxc) to borg repository.
+# Storing backups in borg repo is excellent solution, because of its deduplication and
+# compression capabilities. Try it! :-)
+#
+# VERY IMPORTANT:
+# THIS SCRIPT WORKS WITH *ZFS* ONLY!
+#
+# Proxmox server must be configured to use ZFS. Proxborg will not work with another storage.
+# Proxmox server must be configured to use ZFS. Proxborg will not work with another storage.
+#
+# (Yes, that was twice.)
+#
+
+
+## BASICS
+#
+# There are 2 basic modes of operation implemented:
+# 1. You may simply store normal vm images in borg repo. They are created by
+#    standard backup tool (vzdump) and thus are 100% compatible with Proxmox.
+#    In order to restore them - you simply extract the image from repo and
+#    provide it to Proxmox via gui or cli.
+#    This is the only way to store backups of qemu vm's, but works also with lxc.
+#    In this method the deduplication works, but is not perfect, because the images
+#    consist of unstructured data (at least - they look so from borg point of view).
+# 2. The better way: You may dump whole lxc directory tree into borg repository.
+#    Deduplication in this method is superior, because borg can track every
+#    single file from the container filesystem.
+#    Restoring the container is almost as easy as restoring normal Proxmox backup
+#    (see below).
+# 3. Extra: You may also archive any mounted zfs dataset to borg repo.
+#    For example you may want to backup the hypervisor root filesystem
+#    or particular mount points of containers.
+
+
+## USAGE:
+#
+#    proxborg  [@]vmid|vmhostname[:[!]] | /local/path   [...]
+#
+
+
+##
+## HOWTO?
+##
+
+###  How to backup standard vzdump image of vm? (whatever - qemu or lxc)
+#
+#  proxborg 100 tank @pool
+#
+# Meaning:
+#  - backup vm #100
+#  - backup vm named "tank".
+#    Note: The hostname must be unique! If more than one vm with the given name exist - none will be archived.
+#  - backup all vm's belonging to pool (Note: pool names are case sensitive!)
+#
+
+
+### How to restore qemu image?
+#
+# borg extract --stdout repo::archivename | qmrestore - <new_id>
+#
+# Alternatively you may download the image from borg repository and restore it
+# via Proxmox GUI.
+#
+
+
+### How to restore lxc image?
+#
+# Method 1:
+#
+# borg extract --stdout <repo>::<archive> | pct restore <new_id> - --rootfs rpool:<size> [...]
+#
+# Note: when container is restored from pipe you must set rootfs size manually.
+# Also all mountpoints must be set in commandline (--mp) manually. (If not - everything
+# will be extracted to rootfs.)
+#
+# Example:
+#
+# borg extract --stdout ::test1-100-2020_01_02-03_04_05 - | pct restore 120 - --rootfs rpool:3 --mp0 rpool:8,mp=/var/www --mp1 rpool:15,mp=/srv/vmail --unprivileged 1
+#
+#
+# Method 2:
+#
+# You may mount borg archive and read image from there. This way mounts will be
+# restored automatically.
+#
+# borg mount <repo>::<archive> /mnt/tmp
+# pct restore <new_id> /mnt/tmp/imagename.tar --storage rpool --unprivileged 1
+# umount /mnt/tmp
+#
+#
+# Alternatively you may download the image from borg repository and restore it
+# via Proxmox GUI.
+#
+
+
+###
+### HERE IS THE MAGIC:
+###
+
+### How to backup lxc container THE BETTER WAY?
+#
+# Borg's deduplication is magic. But there is a problem: whenever you create new
+# vzdump-compatible image - it is different than the last one. This makes borg's
+# job harder and reduces its deduplication success rate. That's why it's good
+# idea to provide borg with real filesystem to be archived. This way borg can
+# use metadata (like file size, ctime) to find more deduplicatable data.
+# (And this is real magic!)
+#
+# This script can automatically dump container root filesystem and all mount
+# points directly into borg repository. The end result is 1-1 image of whole
+# container directory tree. Container config is also archived.
+#
+# By the way: Did you know that separate archives in the same borg repository
+# are all deduplicated together? (I told you - magic!)
+# Imagine you have 20 containers with identical Debian base systems. Each base
+# system takes 1GB. You make 20 standard vzdump backups. Each backup takes about
+# 0.5GB after compression. So all backups take 20x0.5=10GB total.
+# Now you switch to Borg: instead of keeping separate dumps - you put them
+# together to one repository. Hocus-pocus-deduplication: The repository with
+# backups of all 20 containers takes 0.5GB total!
+#
+#
+# Usage: proxborg vmid:[!]
+#                     ^ note colon here :-)
+#
+# Where vmid is numerical id of container or its hostname. (Note: Hostname must be
+# unique! If more than one vm with the given name exist - none will be archived.)
+#
+# "!" means: dump all mount points, *including* the ones without "backup=1" flag in config.
+#
+#
+# Example:
+#
+# proxborg tank:! 100: @pool:
+#
+# Meaning:
+# Archive the following data:
+# - container named "tank", including all mountpoints
+# - contaner 100, excluding mountpoints without "backup=1" flag
+#   (This is how vzdump usually does its job.)
+# - all vm's belonging to given pool (note: Pool names are case sensitive!)
+#
+# Note: Qemu vm's are always archived "the standard way" (as vzdump images), so
+# "proxborg 100" and "proxborg 100:" mean exactly the same (if vm 100 is qemu vm).
+#
+#
+
+
+### How to restore lxc container from borg repository?
+#
+# It's really easy:
+#
+# borg export-tar <repo>::<archive> - | pct restore <new_id> - --rootfs <storagepool>:<size> --mp[n] <storagepool>:<size>,mp=<mountpoint> [--unprivileged 1 ...]
+#
+# Example:
+# borg export-tar ::test1-100-2020_01_02-03_04_05 - | pct restore 120 - --rootfs rpool:3 --mp0 rpool:8,mp=/mnt/abc --mp1 rpool:8,mp=/mnt/xyz --unprivileged 1
+#
+#
+# Alternatively you may write the tarball to disk and import in Proxmox GUI.
+#
+# borg export-tar <repo>::<archive> - > <imagename>.tar
+#
+# You may also compress it on the fly, which is actually useless if you are going
+# to restore the container immediately afterwards, but might be necessary if you
+# have not enough disk space:
+#
+# borg export-tar <repo>::<archive> - | gzip > <imagename>.tar.gz
+#
+#
+#
+### What to do when restore fails?
+#
+# Well... It shouldn't fail. :-)
+# Result of "borg export-tar" is basically identical to normal effect of vzdump,
+# so most likely everything will work very well. But if not...
+# First of all - remember: you have full image of all files belonging to the
+# container, as well as copy of old config. This is actually everything you
+# need in order to revive it!
+#
+# Read the old config:
+# borg extract --stdout <repo>::<archivename> etc/vzdump/pct.conf
+#
+# Using these information - create new identical container and restore files from archive.
+# More or less something like this:
+#
+# cd /rpool/data/path/to/container/rootfs
+# rm -rf *
+# borg extract <repo>::<archivename>
+#
+# Consider mountpoints and permissions. Restoring as privileged container should be easier.
+# Good luck! :-)
+#
+#
+
+
+### Extra: How to backup an arbitrary zfs dataset?
+#
+# proxborg /path/to/dataset/you/want/to/backup
+#
+# This way you may backup for example root filesystem of the hypervisor or a particular
+# mount point of a container.
+#
+# Important: Please note that file permissions are stored as-seen-by-hypervisor.
+# It does not matter for privileged containers, but is important for mountpoints
+# of unprivileged ones.
+#
+# Even more important: Backup is NOT recursive. Only ONE dataset will be dumped.
+# If you want to archive children datasets too - archive them separately!
+#
+
+
+## Q&A:
+#
+# Why anyone would use Borg to store backups?
+# Because deduplication. :-)
+#
+# Is this script safe?
+# Well... It should be. But do your own tests.
+# Remember: any untested backup solution is worthless!
+#
+# Is it as safe as standard Proxmox backup tools?
+# Of course it's not... but should work. Actually result of "borg export-tar"
+# is equivalent to vzdump. You should notice no difference.
+#
+# Will it work with non-ZFS storage?
+# NO! It was designed to backup data stored on ZFS. It will also not work if you have mixed
+# zfs and non-zfs storage in one container.
+# "The standard way" (full vm images) might still work, but it has never been tested.
+#
+#
+
+## Hints:
+#
+# [Compression]
+# Do first backup with high compression level (like "auto,lzma" or even "auto,lzma,9").
+# It will take plenty of time, but thanks to deduplication never-changing data will
+# stay in your repository forever with higher compression.
+# Important: If you make first archives with lower compression and later want to
+# switch to higher - create new repository! Otherwise the low-compressed data will stay
+# in repo forever. It's a feature of the deduplication: it writes only new data
+# to repository, and compression is done on writes. Whatever has already been
+# written stays in repository as-is.
+#
+# [Qemu images]
+# It is generally good idea to fill virtual disks with zeros from time to time.
+# This will effect in smaller images, as zeros are compressible very well. :-)
+# In Windows guests you may use sdelete.exe -z.
+# In Linux consider using sfill.
+#
+# [Borg cache]
+# In order to speed up backup process set BORG_FILES_CACHE_TTL accordingly.
+# Generally it is good idea to set it to at least 2-3 times more than the number
+# of vm's you are going store in repository.
+# Read this: https://borgbackup.readthedocs.io/en/stable/faq.html#it-always-chunks-all-my-files-even-unchanged-ones
+#
+
+
+#
+# Do not edit beyond this point. :-)
+
+echo "proxborg - Proxmox with BorgBackup made easy" >&2
+
+NECESSARY_EXECUTABLES="borg cat cut dd date echo grep head hostname jq pct printf pvesh pvesm qm realpath sed sort tr vzdump xargs zfs"
+if ! which $NECESSARY_EXECUTABLES >/dev/null 2>&1; then
+    echo "Missing binaries!" >&2
+    echo "Make sure these tools are available: $NECESSARY_EXECUTABLES" >&2
+    exit 255
+fi
+
+function help {
+cat >&2 <<EOF
+
+USAGE: proxborg vmid|hostname[:[!]] @pool[:[!]] localpath [...]
+
+    This tool makes backup of virtual machine or mounted ZFS filesystem and
+    stores it in borg repository.
+
+    vmid	numeric id of vm
+    hostname	hostname of vm
+		(Must be unique. Storing multiple vm's with
+		the same hostname is supported only using numerical id's.)
+    @pool	all vm's belongning to pool
+
+    <no suffix>	get vm image from vzdump
+    :		dump lxc container as full directory tree (good idea!)
+    :!		include also mountpoints without backup=1 flag
+
+    localpath	path relative to hypervisor filesystem
+EOF
+exit 255
+}
+
+function update_status() {
+    [ $EXIT_STATUS -lt $1 ] && EXIT_STATUS=$1
+    return $1
+}
+
+
+function set_snapsuffix() {
+#    SNAP_SUFFIX=`date +%Y-%m-%dT%H:%M:%S`
+    SNAP_SUFFIX=`date +%Y_%m_%d-%H_%M_%S`
+}
+
+
+function pipe_if_not_empty () {
+  head=$(dd bs=1 count=1 2>/dev/null; echo a)
+  head=${head%a}
+  if [ "x$head" != x"" ]; then
+    { printf %s "$head"; cat; } | "$@"
+  fi
+}
+
+
+function do_backup() {
+    local NAME
+    local NAME_SUFFIX
+
+    if ( echo "$PROCESSED_VMIDS"|grep -Fwq "$VMID" ); then
+	echo "$VMID: vm already dumped, skipping" >&2
+	return 0
+    fi
+    PROCESSED_VMIDS="$PROCESSED_VMIDS $VMID"
+
+    if [ -n "$VMHOSTNAME" -a "$HOSTNAME_IN_ARCHIVENAME" = "1" ]; then NAME="$VMHOSTNAME-"; else NAME="vzdump-"; fi
+    NAME="$NAME$VMTYPE-$VMID-"
+    if [ "$VMTYPE" = "lxc" ]; then NAME_SUFFIX=".tar"
+    else			   NAME_SUFFIX=".vma"
+    fi
+    echo -n "$VMID: dumping image - calling vzdump+borg [${NAME}${SNAP_SUFFIX}${NAME_SUFFIX}]... " >&2
+    set -o pipefail
+    vzdump $VMID --compress 0 --mode snapshot --dumpdir /tmp --stdout $VZDUMP_OPTS | pipe_if_not_empty borg create --stdin-name "${NAME}${SNAP_SUFFIX}${NAME_SUFFIX}" $BORG_OPTS "::${NAME}${SNAP_SUFFIX}${NAME_SUFFIX}" -
+    if [ "$?" -eq "0" ]; then
+	echo "done"
+	PRUNE_LIST+=("$NAME")
+	return 0
+    fi
+    echo "failed (ERROR)" >&2
+    return 2
+}
+
+
+function backup_dataset() {
+    # $1 = absolute path to mounted dataset without trailing slash
+    local FSNAME
+    local NAME=
+    local ABORT=0
+
+    echo -n "snapshotting $1... " >&2
+    FSNAME=`zfs list -t filesystem -H|grep -P "\t$1\$"|cut -f1 -d$'\t'`
+    if [ -z "$FSNAME" ]; then
+	echo "dataset not found (ERROR)" >&2
+	return 2
+    fi
+    if ( zfs snapshot "$FSNAME@$SNAPNAME" ); then
+	echo "created $FSNAME@$SNAPNAME" >&2
+    else
+	echo "failed (ERROR)" >&2
+	return 2
+    fi
+
+    if [ ! -d "$1/.zfs/snapshot/$SNAPNAME" ]; then
+	echo "$1 unreadable (ERROR)" >&2
+	ABORT=2
+	# do not exit yet, snapshot still must be destroyed
+    fi
+
+    if [ "$ABORT" = "0" ]; then
+	[ "$HOSTNAME_IN_ARCHIVENAME" = 1 ] && NAME=$MYHOSTNAME || NAME="dataset"
+	NAME="$NAME`echo "$1"|sed -s 's/[^[:alnum:]-]/-/g'`--"
+#							   ^^ delimiter (make sure not to prune subfolders)
+	echo -n "dumping dataset $1 - calling borg [${NAME}${SNAP_SUFFIX}]... " >&2
+	(
+	    cd "$1/.zfs/snapshot/$SNAPNAME"
+	    borg create --one-file-system $BORG_OPTS "::${NAME}${SNAP_SUFFIX}" .
+	)
+	if [ "$?" -eq "0" ]; then
+	    echo "done" >&2
+	    PRUNE_LIST+=("$NAME")
+	else
+	    echo "finished unclean (ERROR)" >&2
+	    ABORT=2
+	fi
+    fi
+
+    echo -n "destroying snapshot $FSNAME@$SNAPNAME... " >&2
+    if ( zfs destroy "$FSNAME@$SNAPNAME" ); then
+	echo "done" >&2
+	return $ABORT
+    else
+	echo "failed (WARNING)" >&2
+	[ "$ABORT" -ge 1 ] && return $ABORT
+	return 1
+    fi
+}
+
+
+function find_vm() {
+    local A
+    local B
+    VMHOSTNAME=""
+    VMID=""
+    VMTYPE=""
+    VMCONFIG=""
+
+    if [[ "${1}" =~ ^[0-9]+$ ]]; then
+	# by numeric id
+#	A=`pct list|grep "^${1} "|sed -e 's/ *$//g'|grep -oE '[^ ]+$'`
+#	B=`qm list|sed -e 's/^ *//' -e 's/  \+/ /g'|grep "^${1} "|cut -d ' ' -f 2|tr "\n" " "|sed 's/ *$//g'`
+	A=`pvesh get /nodes/$MYHOSTNAME/lxc --output-format json|jq -j ".[] | select(.vmid==\"$1\") | .name"`
+	B=`pvesh get /nodes/$MYHOSTNAME/qemu --output-format json|jq -j ".[] | select(.vmid==\"$1\") | .name"`
+	if [ -z "$A" -a -z "$B" ] ; then
+	    echo "${1}: vm id not found (WARNING)" >&2
+	    return 1
+	fi
+	if [ -n "$A" -a -n "$B" ] ; then
+	    # should never happen :-)
+	    echo "${1}: vm id ambigous - skipping (WARNING)" >&2
+	    return 1
+	fi
+	VMID="${1}"
+	if [ -n "$A" ]; then
+	    VMHOSTNAME="$A"
+	    VMTYPE="lxc"
+	else
+	    VMHOSTNAME="$B"
+	    VMTYPE="qemu"
+	fi
+    else
+	# by hostname
+#	A=`pct list|grep " ${1} *$"|cut -f 1 -d ' '|tr "\n" " "|sed -e 's/ $//'`
+#	B=`qm list|sed -e 's/^ *//' -e 's/  \+/ /g'|cut -d ' ' -f 1,2|grep " ${1}$"|cut -d ' ' -f 1|tr "\n" " "|sed -e 's/ $//'`
+	A=`pvesh get /nodes/$MYHOSTNAME/lxc --output-format json|jq -r ".[] | select(.name==\"$1\") | .vmid"|tr "\n" " "|sed -e 's/ $//'`
+	B=`pvesh get /nodes/$MYHOSTNAME/qemu --output-format json|jq -r ".[] | select(.name==\"$1\") | .vmid"|tr "\n" " "|sed -e 's/ $//'`
+	if [ -n "$A" -a -n "$B" ]; then
+	    echo "${1}: vm name ambigous - found ids: $A $B - skipping (WARNING)" >&2
+	    return 1
+	fi
+	if [ -z "$A" -a -z "$B" ]; then
+	    echo "${1}: vm name not found (WARNING)" >&2
+	    return 1
+	fi
+	# lxc?
+	case "`echo $A|wc -w`" in
+	    "0") # qemu?
+		 ;;
+	    "1") VMHOSTNAME="${1}"
+		 VMTYPE="lxc"
+		 VMID="$A"
+		 echo "$VMHOSTNAME: id=$VMID" >&2
+		 return 0;;
+	    *) echo "${1}: vm name ambigous - found ids: $A - skipping (WARNING)" >&2
+	       return 1;;
+        esac
+	# qemu?
+	case "`echo $B|wc -w`" in
+	    "0") # should never happen :-)
+		 echo "${1}: vm name not found (WARNING)" >&2
+		 return 1;;
+	    "1") VMHOSTNAME="${1}"
+		 VMTYPE="qemu"
+		 VMID="$B"
+		 echo "$VMHOSTNAME: id=$VMID" >&2
+		 return 0;;
+	    *) echo "${1}: vm name ambigous - found ids: $B - skipping (WARNING)" >&2
+	       return 1;;
+        esac
+    fi
+}
+
+
+function vm_snapshot() {
+    echo -n "$VMID: snapshoting... " >&2
+    case "$VMTYPE" in
+	"lxc")	if ( pct snapshot $VMID $SNAPNAME --description "borgprox snapshot $SNAP_SUFFIX" >/dev/null ); then
+		    echo "done" >&2
+		    return 0
+		fi;;
+	"qemu")	if ( qm snapshot $VMID $SNAPNAME --description "borgprox snapshot $SNAP_SUFFIX"  >/dev/null ); then
+		    echo "done" >&2
+		    return 0
+		fi;;
+    esac
+    echo "error" >&2
+    return 2
+}
+
+
+function vm_delsnapshot() {
+    echo -n "$VMID: deleting snapshot... " >&2
+    case "$VMTYPE" in
+	"lxc")	if ( pct delsnapshot $VMID $SNAPNAME >/dev/null ); then
+		    echo "done" >&2
+		    return 0
+		fi;;
+	"qemu")	if ( qm delsnapshot $VMID $SNAPNAME >/dev/null ); then
+		    echo "done" >&2
+		    return 0
+		fi;;
+    esac
+    echo "failed" >&2
+    return 1
+}
+
+
+function get_mountpoints() {
+    [ "$VMTYPE" == "lxc" ] || return
+    local A
+    local B
+    local C
+    #rootfs:
+    A=`echo "$VMCONFIG"|grep "^rootfs: "|cut -f2 -d' '|cut -f1 -d,`
+    if ( pvesm status -enabled -storage `echo $A|cut -f1 -d:` >/dev/null 2>&1 ); then
+	B=`pvesm path $A`
+	if [ -d "$B/.zfs/snapshot/$SNAPNAME" ]; then
+	    echo "/ $B 1"
+	else
+	    echo "$VMID: invalid storage path: $B (skipping)" >&2
+	fi
+    else
+	echo "$VMID: invalid storage: $A (skipping)" >&2
+    fi
+    #mountpoints:
+    for A in `echo "$VMCONFIG"|grep -E '^mp[0-9]+: '|cut -d ' ' -f2`; do
+	if ( pvesm status -enabled -storage `echo $A|cut -f1 -d:` >/dev/null 2>&1 ); then
+	    C=`echo "$A"|sed -s 's/^.*,mp=//'|cut -f1 -d,`
+	    if [ -z "$C" ]; then
+		echo "$VMID: invaild mountpoint: $A (skipping)" >&2
+		 continue
+	    fi
+	    B=`echo $A|cut -d, -f1|xargs pvesm path`
+            if ! [ -d "$B/.zfs/snapshot/$SNAPNAME" ]; then
+                echo "$VMID: invalid storage path: $B (skipping)" >&2
+		continue
+            fi
+	    if echo "$A"|grep ",backup=1" >/dev/null 2>&1; then
+		echo "$C $B 1"
+	    else
+		echo "$C $B 0"
+	    fi
+	else
+	    echo "$VMID: invalid storage: $A (skipping)" >&2
+	    continue
+	fi
+    done
+}
+
+
+function do_lxc_borgbackup() {
+    local A
+    local B
+    local C
+    local D
+    local TMP_DIR
+    local FUSE_MOUNTS=
+    local FUSE_OPTS=
+    local ABORT=0
+    local NAME=
+    local UPPER_DIR
+    local WORK_DIR
+    local VM_UNPRIVILEGED=0
+
+    if ( echo "$PROCESSED_VMIDSB"|grep -Fwq "$VMID" ); then
+	echo "$VMID: vm already dumped, skipping" >&2
+	return 0
+    fi
+    if [ "$VMTYPE" != "lxc" ]; then
+    echo "$VMID: not lxc container - skipping (WARNING)" >&2
+	update_status 1
+	return 1
+    fi
+    PROCESSED_VMIDSB="$PROCESSED_VMIDSB $VMID"
+
+    TMP_DIR=$(mktemp -d -t proxborg-XXXXXXXXXX)
+    if [ ! -d "$TMP_DIR" ]; then
+	echo "$VMID: unable to create tmpdir. (ERROR)" >&2
+	update_status 2
+	return 2
+    fi
+    mkdir -p "$TMP_DIR/root"
+
+    vm_snapshot || update_status $? || return $?
+    VMCONFIG=`pct config $VMID --snapshot $SNAPNAME`
+    VM_MOUNTPOINTS=`get_mountpoints| LC_ALL=C sort`
+
+    if (echo "$VMCONFIG"|grep -q '^[[:space:]]*unprivileged:[[:space:]][[:space:]]*1[[:space:]]*$' ); then
+	VM_UNPRIVILEGED=1
+	FUSE_OPTS=",uidmapping=100000:0:65536,gidmapping=100000:0:65536"
+    fi
+
+    while read A B C; do
+	[ "$C" = "1" ] || [ "$DUMP_ALL" = "1" ] || continue
+	echo -n "$VMID: mounting $A... " >&2
+	mkdir -p "$TMP_DIR/root/$A"
+	UPPER_DIR=`mktemp -d -p $TMP_DIR`
+	chown --reference="$B/.zfs/snapshot/$SNAPNAME/." $UPPER_DIR
+	chmod --reference="$B/.zfs/snapshot/$SNAPNAME/." $UPPER_DIR
+	WORK_DIR=`mktemp -d -p $TMP_DIR`
+	if ( ! fuse-overlayfs -o "lowerdir=$B/.zfs/snapshot/$SNAPNAME,upperdir=$UPPER_DIR,workdir=$WORK_DIR$FUSE_OPTS" "$TMP_DIR/root/$A" 2>/dev/null ); then
+	    echo "failed" >&2
+	    update_status 2
+	    ABORT=1
+	    break
+	fi
+	FUSE_MOUNTS="$A $FUSE_MOUNTS"
+	echo "done" >&2
+    done < <(echo "$VM_MOUNTPOINTS")
+
+    if [ "$ABORTED" != "1" -a  ! -d "$TMP_DIR/root/etc/vzdump" ]; then
+	mkdir -p "$TMP_DIR/root/etc/vzdump"
+#	chown 65534:65534 "$TMP_DIR/root/etc/vzdump"
+    fi
+
+    if [ "$ABORTED" != "1" ]; then
+	echo "$VMCONFIG"|grep -Ev '^(parent|snaptime|description): ' >"$TMP_DIR/root/etc/vzdump/pct.conf"
+	chown 65534:65534 "$TMP_DIR/root/etc/vzdump/pct.conf"
+	if [ -e "/etc/pve/firewall/$VMID.fw" ]; then
+	    cat "/etc/pve/firewall/$VMID.fw" >"$TMP_DIR/root/etc/vzdump/pct.fw"
+	    chown 65534:65534 "$TMP_DIR/root/etc/vzdump/pct.fw"
+	fi
+    fi
+
+    if [ -n "$VMHOSTNAME" -a "$HOSTNAME_IN_ARCHIVENAME" = "1" ]; then NAME="$VMHOSTNAME-"; else NAME="dump-"; fi
+    NAME="$NAME$VMID-"
+
+    (
+	cd "$TMP_DIR/root"
+	echo -n "$VMID: dumping directory tree - calling borg [${NAME}${SNAP_SUFFIX}]... " >&2
+	borg create --numeric-owner $BORG_OPTS "::${NAME}${SNAP_SUFFIX}" ./ --exclude 'lost+found' --exclude './tmp/?*' --exclude './var/tmp/?*' --exclude './var/run/?*.pid'
+    )
+
+    if [ "$?" -eq "0" ]; then
+	echo "done" >&2
+	PRUNE_LIST+=("$NAME")
+    else 
+	echo "failed" >&2
+	update_status 2
+	ABORTED=1
+    fi
+
+    if [ -n "$FUSE_MOUNTS" ]; then
+	    echo -n "$VMID: unmounting... " >&2
+	    for A in $FUSE_MOUNTS; do
+	    umount "$TMP_DIR/root/$A"
+	done
+	echo "done" >&2
+    fi
+
+    VM_MOUNTPOINTS=
+    vm_delsnapshot || update_status $?
+
+    rm -rf "$TMP_DIR"
+    return 0
+}
+
+
+function process_job() {
+    local B
+    local C
+    local D
+    local SFX
+    local MOUNTPOINT
+    [ "$EXIT_ON_ERRORS" = "1" -a "$EXIT_STATUS" -ge 2 ] && return
+
+    set_snapsuffix
+    if ( echo "$1"|grep -q "^@" ); then
+	# backup pool
+	B=`echo "$1"|sed -e 's/^@//'|cut -d: -f1`
+	C=`pvesh get "/pools/$B" --output-format json 2>/dev/null | jq '.members[].vmid'`
+	if [ -z "$C" ]; then
+	    echo "Pool '$B' does not exist (case sensitive!). (WARNING)" >&2
+	    update_status 1
+	    return 1
+	fi
+	echo "Processing pool $B..." >&2
+	if ( echo "$1"|grep -q ":!$" ); then SFX=":!"
+	elif ( echo "$1"|grep -q ":$" ); then SFX=":"
+	else SFX=""
+	fi
+	for D in $C; do 
+	    process_job "$D$SFX"
+	done
+
+    elif ( echo "$1"|grep -q ":" ); then
+	find_vm `echo "$1"|cut -d: -f 1` || update_status $? || return $?
+	if [ "$VMTYPE" = "lxc" ]; then
+	    # backup directory tree
+	    (echo "$1"|grep -q '!$') && DUMP_ALL=1 || DUMP_ALL=0
+	    do_lxc_borgbackup
+	else
+	    # backup full vm
+	    do_backup || update_status $? || return $?
+	fi
+
+    elif ( echo "$1"|grep -q "/" ); then
+	# backup local dataset
+	MOUNTPOINT=`realpath -e "$1" 2>/dev/null`
+	if [ -z "$MOUNTPOINT" ]; then
+	    echo "path not found: $1 (WARNING)" >&2
+	    update_status 1
+	    return 1
+	fi
+	if ( echo "$PROCESSED_MOUNTPOINTS"|grep -Fwq "$MOUNTPOINT" ); then
+	    echo "$MOUNTPOINT: already processed, skipping" >&2
+	    return
+	fi
+	PROCESSED_MOUNTPOINTS="$PROCESSED_MOUNTPOINTS $MOUNTPOINT"
+	backup_dataset "$MOUNTPOINT" || update_status $? || return $?
+
+    else
+	# backup full vm
+	find_vm "$1" || update_status $? || return $?
+	do_backup || update_status $? || return $?
+    fi
+}
+
+#
+#
+
+[ "$#" -eq 0 ] && help
+[ "$EXIT_ON_ERRORS" != "1" ] && EXIT_ON_ERRORS=0
+[ "$PRUNE_ON_WARNINGS" != "1" ] && PRUNE_ON_WARNINGS=0
+[ -z "$SNAPNAME" ] && SNAPNAME=`date +pb%s`
+MYHOSTNAME=`hostname`
+EXIT_STATUS=0
+PROCESSED_VMIDS=
+PROCESSED_VMIDSB=
+PROCESSED_MOUNTPOINTS=
+PRUNE_LIST=()
+
+for A in "$@"; do
+    if [ "$EXIT_ON_ERRORS" = "1" -a "$EXIT_STATUS" -ge 2 ]; then
+	echo "ABORTED" >&2
+	break
+    fi
+    process_job `echo "$A"|head -n 1|cut -f 1 -d " "`
+done
+
+[ ${#PRUNE_LIST[*]} -eq 0  ] || [ -z "$PRUNE_OPTS" ] || [ "$EXIT_STATUS" -gt 1 ] || [ "$EXIT_STATUS" -eq 1 -a "$PRUNE_ON_WARNINGS" != "1" ] || {
+    echo "Pruning old archives... " >&2
+    for A in ${PRUNE_LIST[@]}; do
+        borg prune --prefix "$A" $PRUNE_OPTS
+    done
+}
+
+[ "$SHOW_SUMMARY" = "1" ] && borg info
+
+if [ "$EXIT_STATUS" -ge 2 ];   then  echo "Finished with errors!" >&2
+elif [ "$EXIT_STATUS" = "1" ]; then  echo "Finished with warnings." >&2
+else				     echo "Finished successfully." >&2
+fi
+exit $EXIT_STATUS
