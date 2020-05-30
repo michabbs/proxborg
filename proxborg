@@ -1,5 +1,5 @@
 #!/bin/bash
-# proxborg 1.0
+# proxborg 1.0.1
 # Copyright (c) 2020, Przemyslaw Kwiatkowski
 # All rights reserved.
 #
@@ -82,6 +82,8 @@
 #VZDUMP_OPTS="--quiet --mailnotification failure --mailto root@localhost --script /bin/true"
 VZDUMP_OPTS="--quiet"
 
+# Sleep n seconds before destroying vm snapshot. (Might help to release filesystem locks.)
+#SLEEP_BEFORE_DELETE=10
 
 ## PREREQUISITES
 #
@@ -365,7 +367,7 @@ VZDUMP_OPTS="--quiet"
 
 echo "proxborg - Proxmox with BorgBackup made easy" >&2
 
-NECESSARY_EXECUTABLES="borg cat cut dd date echo grep head hostname jq pct printf pvesh pvesm qm realpath sed sort tr vzdump xargs zfs"
+NECESSARY_EXECUTABLES="borg cat cut dd date echo grep head hostname jq pct printf pvesh pvesm qm realpath sed sleep sort tr vzdump xargs zfs"
 if ! which $NECESSARY_EXECUTABLES >/dev/null 2>&1; then
     echo "Missing binaries!" >&2
     echo "Make sure these tools are available: $NECESSARY_EXECUTABLES" >&2
@@ -592,6 +594,7 @@ function vm_snapshot() {
 
 function vm_delsnapshot() {
     echo -n "$VMID: deleting snapshot... " >&2
+    sleep "$SLEEP_BEFORE_DELETE"
     case "$VMTYPE" in
 	"lxc")	if ( pct delsnapshot $VMID $SNAPNAME >/dev/null ); then
 		    echo "done" >&2
@@ -825,6 +828,7 @@ function process_job() {
 [ "$EXIT_ON_ERRORS" != "1" ] && EXIT_ON_ERRORS=0
 [ "$PRUNE_ON_WARNINGS" != "1" ] && PRUNE_ON_WARNINGS=0
 [ -z "$SNAPNAME" ] && SNAPNAME=`date +pb%s`
+[ -z "$SLEEP_BEFORE_DELETE" ] && SLEEP_BEFORE_DELETE=0
 MYHOSTNAME=`hostname`
 EXIT_STATUS=0
 PROCESSED_VMIDS=
