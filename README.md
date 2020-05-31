@@ -191,23 +191,17 @@ Example:
 
     borg export-tar ::test1-100-2020_01_02-03_04_05 - | pct restore 120 - --rootfs rpool:3 --mp0 rpool:8,mp=/mnt/abc --mp1 rpool:8,mp=/mnt/xyz --unprivileged 1
 
+Make sure to set up mountpoints correctly! Use this command to see the
+necessary mountpoints configuration:
 
-Alternatively you may write the tarball to disk and import in Proxmox GUI.
-
-    borg export-tar <repo>::<archive> - > <imagename>.tar
-
-You may also compress it on the fly, which is actually useless if you are going
-to restore the container immediately afterwards, but might be necessary if you
-have not enough disk space:
-
-    borg export-tar <repo>::<archive> - | gzip > <imagename>.tar.gz
+    borg extract --stdout <repo>::<archivename> etc/vzdump/pct.conf
 
 
 
 # What to do when restore fails?
 
 Well... It shouldn't fail. :-)
-Result of "borg export-tar" is basically identical to normal effect of vzdump,
+Content of "borg export-tar" is very similar to normal effect of vzdump,
 so most likely everything will work very well. But if not...
 First of all - remember: you have full image of all files belonging to the
 container, as well as copy of old config. This is actually everything you
