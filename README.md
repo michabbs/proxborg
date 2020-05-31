@@ -1,8 +1,8 @@
 # PREREQUISITES
 
-This script requires jq binary. Install it:
+This script requires jq and acl packages. Install them:
 
-    apt install jq
+    apt install jq acl
 
 This script requires fuse-overlayfs. Version at least 1.0 is *recommended*.
 Unfortunately at the time of writing the newest version provided by Proxmox
@@ -196,6 +196,7 @@ necessary mountpoints configuration:
 
     borg extract --stdout <repo>::<archivename> etc/vzdump/pct.conf
 
+Read about ACL's below!
 
 
 # What to do when restore fails?
@@ -220,6 +221,53 @@ More or less something like this:
 
 Consider mountpoints and permissions. Restoring as privileged container should be easier.
 Good luck! :-)
+
+# What about ACL's?
+
+THIS IS IMPORTANT if you have any mountpoint with ACLs enabled.
+You must read and UNDERSTAND this:
+
+The ACL's are correctly stored inside Borg repository (this is good).
+The "borg export-tar" command does not extract ACL's (this is bad).
+
+So in order to restore the ACL's you must manually extract the archive
+(or at least the affected subfolders) using "borg extract".
+
+I suggest you do something like this:
+
+    borg export-tar --exclude path/with/acls/ <repo>::<archive> - | pct restore [options as described above]
+
+Now create missing mountpoints (for example via Proxmox GUI) and extract missing subfolders from archive.
+Let's assume folder /srv/sambashare is to be restored. Do something like this:
+
+    cd /tmp
+    mkdir temporary
+    mount -t tmpfs -o posixacl tmpfs temporary
+    cd temporary
+    mkdir sambashare
+    # Note: the above folder name ("sambashare") MUST match the lowest-level folder name to be restored.
+    mount --bind /rpool/data/path/to/container/mountpoint/with/acls/ sambashare
+    borg extract --strip-components 1 <repo>::<archivename> srv/sambashare
+    #                                                                     ^ no slash here!
+    #                               ^ here the depth of "sambashare" (number of slashes in "srv/sambashare")
+    umount sambashare
+    cd ..
+    umount temporary
+    cd ..
+    rm -rf temporary
+
+The above procedure is so complicated in order to restore correctly the
+ACL's of mountpoint root.  If it is not important you may simplify it so:
+
+    cd /rpool/data/path/to/container/mountpoint/with/acls/
+    borg extract --strip-components 2 <repo>::<archivename> srv/sambashare/
+    # Note slash:                   ^                                     ^
+
+
+If the container is unprivileged - the uid/gid shift must be considered.
+You may use for example shiftfs or fuse-overlayfs. It might be easier
+to simply restore the container as privileged, then backup via Proxmox GUI and
+restore again as unprivileged. :-)
 
 
 
@@ -253,7 +301,8 @@ If you want to archive children datasets too - archive them separately!
 - Is it as safe as standard Proxmox backup tools?
 
   Of course it's not... but should work. Actually result of "borg export-tar"
-  is equivalent to vzdump. You should notice no difference.
+  is equivalent to vzdump. You should notice no difference as long as you use stdin
+  as restore source (as described above).
 
 - Will it work with non-ZFS storage?
 
@@ -289,3 +338,12 @@ In order to speed up backup process set BORG_FILES_CACHE_TTL accordingly.
 Generally it is good idea to set it to at least 2-3 times more than the number
 of vm's you are going store in repository.
 Read this: https://borgbackup.readthedocs.io/en/stable/faq.html#it-always-chunks-all-my-files-even-unchanged-ones
+
+[ACL's]
+
+Consider setting "backup=0" on all mountpoints with ACL's enabled and store
+these mountpoints in separate archives (might be in the same repository).
+This will make your life easier on restore.
+Note that separate backups of particular mountpoints will be done on different
+times, so your backup will not be "atomic". Depending on circumstances this
+might be bad or not-so-bad. :-)

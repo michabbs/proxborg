@@ -87,8 +87,8 @@ VZDUMP_OPTS="--quiet"
 
 ## PREREQUISITES
 #
-# 1. This script requires jq binary. Install it:
-#	apt install jq
+# 1. This script requires jq and acl packages. Install them:
+#	apt install jq acl
 #
 # 2. This script requires fuse-overlayfs. Version at least 1.0 is *recommended*.
 #    Unfortunately at the time of writing the newest version provided by Proxmox
@@ -266,6 +266,8 @@ VZDUMP_OPTS="--quiet"
 # necessary mountpoints configuration:
 # borg extract --stdout <repo>::<archivename> etc/vzdump/pct.conf
 #
+# Read about ACL's below!
+#
 #
 ### What to do when restore fails?
 #
@@ -290,6 +292,52 @@ VZDUMP_OPTS="--quiet"
 # Good luck! :-)
 #
 #
+### What about ACL's?
+#
+# THIS IS IMPORTANT if you have any mountpoint with ACLs enabled.
+# You must read and UNDERSTAND this:
+#
+# The ACL's are correctly stored inside Borg repository (this is good).
+# The "borg export-tar" command does not extract ACL's (this is bad).
+#
+# So in order to restore the ACL's you must manually extract the archive
+# (or at least the affected subfolders) using "borg extract".
+#
+# I suggest you do something like this:
+# borg export-tar --exclude path/with/acls/ <repo>::<archive> - | pct restore [options as described above]
+#
+# Now create missing mountpoints (for example via Proxmox GUI) and extract missing subfolders from archive.
+# Let's assume folder /srv/sambashare is to be restored. Do something like this:
+#
+# cd /tmp
+# mkdir temporary
+# mount -t tmpfs -o posixacl tmpfs temporary
+# cd temporary
+# mkdir sambashare
+# # Note: the above folder name ("sambashare") MUST match the lowest-level folder name to be restored.
+# mount --bind /rpool/data/path/to/container/mountpoint/with/acls/ sambashare
+# borg extract --strip-components 1 <repo>::<archivename> srv/sambashare
+# #                                                                     ^ no slash here!
+# #                               ^ here the depth of "sambashare" (number of slashes in "srv/sambashare")
+# umount sambashare
+# cd ..
+# umount temporary
+# cd ..
+# rm -rf temporary
+#
+# The above procedure is so complicated in order to restore correctly the
+# ACL's of mountpoint root.  If it is not important you may simplify it so:
+#
+# cd /rpool/data/path/to/container/mountpoint/with/acls/
+# borg extract --strip-components 2 <repo>::<archivename> srv/sambashare/
+# # Note slash:                   ^                                     ^
+#
+#
+# If the container is unprivileged - the uid/gid shift must be considered.
+# You may use for example shiftfs or fuse-overlayfs. It might be easier
+# to simply restore the container as privileged, then backup via Proxmox GUI and
+# restore again as unprivileged. :-)
+#
 
 
 ### Extra: How to backup an arbitrary zfs dataset?
@@ -301,7 +349,8 @@ VZDUMP_OPTS="--quiet"
 #
 # Important: Please note that file permissions are stored as-seen-by-hypervisor.
 # It does not matter for privileged containers, but is important for mountpoints
-# of unprivileged ones.
+# of unprivileged ones. (If you backed up unprivileged, you must reastore also
+# as unprivileged.)
 #
 # Even more important: Backup is NOT recursive. Only ONE dataset will be dumped.
 # If you want to archive children datasets too - archive them separately!
@@ -353,14 +402,21 @@ VZDUMP_OPTS="--quiet"
 # of vm's you are going store in repository.
 # Read this: https://borgbackup.readthedocs.io/en/stable/faq.html#it-always-chunks-all-my-files-even-unchanged-ones
 #
-
+# [ACL's]
+# Consider setting "backup=0" on all mountpoints with ACL's enabled and store
+# these mountpoints in separate archives (might be in the same repository).
+# This will make your life easier on restore.
+# Note that separate backups of particular mountpoints will be done on different
+# times, so your backup will not be "atomic". Depending on circumstances this
+# might be bad or not-so-bad. :-)
+#
 
 #
 # Do not edit beyond this point. :-)
 
 echo "proxborg - Proxmox with BorgBackup made easy" >&2
 
-NECESSARY_EXECUTABLES="borg cat cut dd date echo grep head hostname jq pct printf pvesh pvesm qm realpath sed sleep sort tr vzdump xargs zfs"
+NECESSARY_EXECUTABLES="borg cat cut dd date echo getfacl grep head hostname jq pct printf pvesh pvesm qm realpath sed setfacl sleep sort tr vzdump xargs zfs"
 if ! which $NECESSARY_EXECUTABLES >/dev/null 2>&1; then
     echo "Missing binaries!" >&2
     echo "Make sure these tools are available: $NECESSARY_EXECUTABLES" >&2
@@ -677,6 +733,7 @@ function do_lxc_borgbackup() {
 	update_status 2
 	return 2
     fi
+    mount -t tmpfs -o posixacl tmpfs "$TMP_DIR"
     mkdir -p "$TMP_DIR/root"
 
     vm_snapshot || update_status $? || return $?
@@ -695,6 +752,7 @@ function do_lxc_borgbackup() {
 	UPPER_DIR=`mktemp -d -p $TMP_DIR`
 	chown --reference="$B/.zfs/snapshot/$SNAPNAME/." $UPPER_DIR
 	chmod --reference="$B/.zfs/snapshot/$SNAPNAME/." $UPPER_DIR
+	getfacl "$B/.zfs/snapshot/$SNAPNAME/." 2>/dev/null| setfacl --set-file=- $UPPER_DIR
 	WORK_DIR=`mktemp -d -p $TMP_DIR`
 	if ( ! fuse-overlayfs -o "lowerdir=$B/.zfs/snapshot/$SNAPNAME,upperdir=$UPPER_DIR,workdir=$WORK_DIR$FUSE_OPTS" "$TMP_DIR/root/$A" 2>/dev/null ); then
 	    echo "failed" >&2
@@ -749,6 +807,7 @@ function do_lxc_borgbackup() {
     VM_MOUNTPOINTS=
     vm_delsnapshot || update_status $?
 
+    umount "$TMP_DIR"
     rm -rf "$TMP_DIR"
     return 0
 }
