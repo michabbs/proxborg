@@ -317,9 +317,9 @@ If you want to archive children datasets too - archive them separately!
 
 [Compression]
 
-Do first backup with high compression level (like "auto,lzma" or even "auto,lzma,9").
-It will take plenty of time, but thanks to deduplication never-changing data will
-stay in your repository forever with higher compression.
+Do first backup with high compression level (like "auto,lzma" or "auto,zstd,9").
+It will take plenty of time (especially lzma is very slow), but thanks to deduplication
+never-changing data will stay in your repository forever with higher compression.
 Important: If you make first archives with lower compression and later want to
 switch to higher - create new repository! Otherwise the low-compressed data will stay
 in the repo forever. It's a feature of the deduplication: it writes only new data

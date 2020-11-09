@@ -48,10 +48,10 @@
 # Add --list for list of all backed up files.
 # See more: https://borgbackup.readthedocs.io/en/stable/usage/create.html
 #BORG_OPTS="--compression auto,zstd"
-#BORG_OPTS="--compression auto,lzma,9"
-#BORG_OPTS="--progress --compression auto,lzma,9"
+#BORG_OPTS="--compression auto,zstd,9"
+#BORG_OPTS="--progress --compression auto,lzma"
 #BORG_OPTS="--compression=lz4 --list --remote-ratelimit 9000"
-#BORG_OPTS="--compression=auto,lzma,9 --exclude-caches --list"
+#BORG_OPTS="--compression=auto,lzma --exclude-caches --list"
 #BORG_OPTS="--compression=lz4 --exclude-caches --exclude-nodump --progress"
 #BORG_OPTS="--compression=lz4 --exclude-caches"
 #BORG_OPTS="--compression=lz4 --list --progress"
