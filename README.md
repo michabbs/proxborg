@@ -1,5 +1,7 @@
 # PREREQUISITES
 
+This script should be run as root.
+
 This script requires jq and acl packages. Install them:
 
     apt install jq acl
@@ -7,15 +9,14 @@ This script requires jq and acl packages. Install them:
 This script requires fuse-overlayfs. Version at least 1.0 is *recommended*.
 Unfortunately at the time of writing the newest version provided by Proxmox
 (or actually by Debian Buster) is 0.3. You may try it (apt install fuse-overlayfs),
-but better simply download newer package from Debian Bullseye. Look here:
-https://packages.debian.org/bullseye/fuse-overlayfs for available version.
+but better get newer package from Debian Bullseye. You may do it more or less
+this way:
 
-    Example:
-    wget http://ftp.us.debian.org/debian/pool/main/f/fuse-overlayfs/fuse-overlayfs_1.0.0-1_amd64.deb
-    dpkg -i fuse-overlayfs_1.0.0-1_amd64.deb
-
-This script should be run as root.
-
+    echo -e "# next release (important: remember to set priority to -1)\ndeb http://ftp.pl.debian.org/debian bullseye main" >/etc/apt/sources.list.d/debian-bullseye.list
+    echo -e "Package: *\nPin: release n=bullseye\nPin-Priority: -1" >/etc/apt/preferences.d/00bullseye
+    echo -e "Package: fuse-overlayfs\nPin: release n=bullseye\nPin-Priority: 700" >/etc/apt/preferences.d/99fuse-overlayfs
+    apt update
+    apt install fuse-overlayfs
 
 
 # GENERAL INFO
