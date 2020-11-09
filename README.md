@@ -20,8 +20,9 @@ This script should be run as root.
 
 # GENERAL INFO
 
-This script automates backup of Proxmox vm's (both qemu and lxc) to borg repository.
-Storing backups in borg repo is excellent solution, because of its deduplication and
+This script automates backup of Proxmox VMs (both qemu and lxc) to a borg repository.
+
+Storing backups in a borg repo is an excellent solution, because of its deduplication and
 compression capabilities. Try it! :-)
 
 VERY IMPORTANT:
@@ -36,32 +37,32 @@ Proxmox server must be configured to use ZFS. Proxborg will not work with anothe
 
 # CONFIGURATION
 
-Edit script and fill available variables, or provide them in environment.
+Edit the script and fill in available variables, or provide them in environment.
 At least you must set:
 
     export BORG_REPO='ssh://where/is/repo'
 
-Possibly you will need also another borg configuration variables, like
+Possibly you will need also other borg configuration variables, like
 BORG_PASSPHRASE, BORG_KEY_FILE, BORG_BASE_DIR or BORG_FILES_CACHE_TTL.
-See more: https://borgbackup.readthedocs.io/en/stable/usage/general.html
+See there: https://borgbackup.readthedocs.io/en/stable/usage/general.html
 
 
 # BASICS
 
 There are 2 basic modes of operation implemented:
-1. You may simply store normal vm images in borg repo. They are created by
-   standard backup tool (vzdump) and thus are 100% compatible with Proxmox.
-   In order to restore them - you simply extract the image from repo and
+1. You may simply store normal VM images into a borg repo. They are created by
+   the standard backup tool (vzdump) and thus are 100% compatible with Proxmox.
+   In order to restore them you simply extract the image from the repo and
    provide it to Proxmox via gui or cli.
-   This is the only way to store backups of qemu vm's, but works also with lxc.
+   This is the only way to store backups of qemu VMs, but works also with lxc.
    In this method the deduplication works, but is not perfect, because the images
-   consist of unstructured data (at least - they look so from borg point of view).
-2. The better way: You may dump whole lxc directory tree into borg repository.
-   Deduplication in this method is superior, because borg can track every
+   consist of unstructured data (at least they look so from borg point of view).
+2. The better way: You may dump the whole lxc directory tree into borg repository.
+   Deduplication with this method is superior, because borg can track every
    single file from the container filesystem.
-   Restoring the container is almost as easy as restoring normal Proxmox backup
+   Restoring the container is almost as easy as restoring a normal Proxmox backup
    (see below).
-3. Extra: You may also archive any mounted zfs dataset to borg repo.
+3. Extra: You may also archive any mounted zfs dataset to a borg repo.
    For example you may want to backup the hypervisor root filesystem
    or particular mount points of containers.
 
@@ -76,35 +77,35 @@ There are 2 basic modes of operation implemented:
 # HOWTO?
 #
 
-#  How to backup standard vzdump image of vm? (whatever - qemu or lxc)
+#  How to backup standard vzdump image of a VM? (whatever - qemu or lxc)
 
     proxborg 100 tank @pool
 
 Meaning:
   - backup vm #100
   - backup vm named "tank".
-    Note: The hostname must be unique! If more than one vm with the given name exist - none will be archived.
-  - backup all vm's belonging to pool (Note: pool names are case sensitive!)
+    Note: The hostname must be unique! If more than one VM with the given name exist, none will be archived.
+  - backup all VMs belonging to pool (note: pool names are case sensitive).
 
 
 
-# How to restore qemu image?
+# How to restore a qemu image?
 
     borg extract --stdout repo::archivename | qmrestore - <new_id>
 
-Alternatively you may download the image from borg repository and restore it
+Alternatively you may extract the image from the borg repository and restore it
 via Proxmox GUI.
 
 
 
-# How to restore lxc image?
+# How to restore an lxc image?
 
 Method 1:
 
     borg extract --stdout <repo>::<archive> | pct restore <new_id> - --rootfs rpool:<size> [...]
 
-Note: when container is restored from pipe you must set rootfs size manually.
-Also all mountpoints must be set in commandline (--mp) manually. (If not - everything
+Note: when a container is restored via a pipe you must set the rootfs size manually.
+Also all mountpoints must be set via commandline (--mp) manually. (If not - everything
 will be extracted to rootfs.)
 
 Example:
@@ -114,7 +115,7 @@ Example:
 
 Method 2:
 
-You may mount borg archive and read image from there. This way mounts will be
+You may mount borg archive and read the image from there. This way mounts will be
 restored automatically.
 
     borg mount <repo>::<archive> /mnt/tmp
@@ -122,7 +123,7 @@ restored automatically.
     umount /mnt/tmp
 
 
-Alternatively you may download the image from borg repository and restore it
+Alternatively, you may extract the image from the borg repository and restore it
 via Proxmox GUI.
 
 
@@ -133,16 +134,16 @@ via Proxmox GUI.
 
 # How to backup lxc container THE BETTER WAY?
 
-Borg's deduplication is magic. But there is a problem: whenever you create new
+Borg's deduplication is magic. But there is a problem: whenever you create a new
 vzdump-compatible image - it is different than the last one. This makes borg's
-job harder and reduces its deduplication success rate. That's why it's good
-idea to provide borg with real filesystem to be archived. This way borg can
+job harder and reduces its deduplication success rate. That's why it's a good
+idea to provide borg with the real filesystem to be archived. This way borg can
 use metadata (like file size, ctime) to find more deduplicatable data.
 (And this is real magic!)
 
-This script can automatically dump container root filesystem and all mount
-points directly into borg repository. The end result is 1-1 image of whole
-container directory tree. Container config is also archived.
+This script can automatically dump a container root filesystem and all mount
+points directly into borg repository. The end result is 1:1 image of whole
+container directory tree. The container config is also archived.
 
 By the way: Did you know that separate archives in the same borg repository
 are all deduplicated together? (I told you - magic!)
@@ -150,7 +151,7 @@ Imagine you have 20 containers with identical Debian base systems. Each base
 system takes 1GB. You make 20 standard vzdump backups. Each backup takes about
 0.5GB after compression. So all backups take 20x0.5=10GB total.
 Now you switch to Borg: instead of keeping separate dumps - you put them
-together to one repository. Hocus-pocus-deduplication: The repository with
+together into one repository. Hocus-pocus-deduplication: The repository with
 backups of all 20 containers takes 0.5GB total!
 
 
@@ -159,8 +160,8 @@ Usage:
     proxborg vmid:[!]
                  ^ note colon here :-)
 
-Where vmid is numerical id of container or its hostname. (Note: Hostname must be
-unique! If more than one vm with the given name exist - none will be archived.)
+Where vmid is the numerical id of the container or its hostname. (Note: Hostname must be
+unique! If more than one VM with the given name exist, none will be archived.)
 
 "!" means: dump all mount points, *including* the ones without "backup=1" flag in config.
 
@@ -174,10 +175,10 @@ Archive the following data:
 - container named "tank", including all mountpoints
 - contaner 100, excluding mountpoints without "backup=1" flag
   (This is how vzdump usually does its job.)
-- all vm's belonging to given pool (note: Pool names are case sensitive!)
+- all VMs belonging to given pool (note: Pool names are case sensitive!)
 
-Note: Qemu vm's are always archived "the standard way" (as vzdump images), so
-"proxborg 100" and "proxborg 100:" mean exactly the same (if vm 100 is qemu vm).
+Note: Qemu VMs are always archived "the standard way" (as vzdump images), so
+"proxborg 100" and "proxborg 100:" mean exactly the same (if VM 100 is a qemu VM).
 
 
 
@@ -196,7 +197,7 @@ necessary mountpoints configuration:
 
     borg extract --stdout <repo>::<archivename> etc/vzdump/pct.conf
 
-Read about ACL's below!
+Read about ACLs below!
 
 
 # What to do when restore fails?
@@ -204,8 +205,8 @@ Read about ACL's below!
 Well... It shouldn't fail. :-)
 Content of "borg export-tar" is very similar to normal effect of vzdump,
 so most likely everything will work very well. But if not...
-First of all - remember: you have full image of all files belonging to the
-container, as well as copy of old config. This is actually everything you
+First of all - remember: you have a full image of all files belonging to the
+container, as well as a copy of the old config. This is actually everything you
 need in order to revive it!
 
 Read the old config:
@@ -222,15 +223,15 @@ More or less something like this:
 Consider mountpoints and permissions. Restoring as privileged container should be easier.
 Good luck! :-)
 
-# What about ACL's?
+# What about ACLs?
 
 THIS IS IMPORTANT if you have any mountpoint with ACLs enabled.
 You must read and UNDERSTAND this:
 
-The ACL's are correctly stored inside Borg repository (this is good).
-The "borg export-tar" command does not extract ACL's (this is bad).
+The ACLs are correctly stored inside Borg repository (this is good).
+The "borg export-tar" command does not extract ACLs (this is bad).
 
-So in order to restore the ACL's you must manually extract the archive
+So in order to restore the ACLs you must manually extract the archive
 (or at least the affected subfolders) using "borg extract".
 
 I suggest you do something like this:
@@ -257,7 +258,7 @@ Let's assume folder /srv/sambashare is to be restored. Do something like this:
     rm -rf temporary
 
 The above procedure is so complicated in order to restore correctly the
-ACL's of mountpoint root.  If it is not important you may simplify it so:
+ACLs of mountpoint root.  If it is not important you may simplify it to:
 
     cd /rpool/data/path/to/container/mountpoint/with/acls/
     borg extract --strip-components 2 <repo>::<archivename> srv/sambashare/
@@ -291,7 +292,7 @@ If you want to archive children datasets too - archive them separately!
 
 - Why anyone would use Borg to store backups?
 
-  Because deduplication. :-)
+  Because of deduplication. :-)
 
 - Is this script safe?
 
@@ -300,7 +301,7 @@ If you want to archive children datasets too - archive them separately!
 
 - Is it as safe as standard Proxmox backup tools?
 
-  Of course it's not... but should work. Actually result of "borg export-tar"
+  Of course it's not... but should work. Actually, the result of "borg export-tar"
   is equivalent to vzdump. You should notice no difference as long as you use stdin
   as restore source (as described above).
 
@@ -308,7 +309,7 @@ If you want to archive children datasets too - archive them separately!
 
   NO! It was designed to backup data stored on ZFS. It will also not work if you have mixed
   zfs and non-zfs storage in one container.
-  "The standard way" (full vm images) might still work, but it has never been tested.
+  "The standard way" (full VM images) might still work, but it has never been tested.
 
 
 
@@ -321,13 +322,13 @@ It will take plenty of time, but thanks to deduplication never-changing data wil
 stay in your repository forever with higher compression.
 Important: If you make first archives with lower compression and later want to
 switch to higher - create new repository! Otherwise the low-compressed data will stay
-in repo forever. It's a feature of the deduplication: it writes only new data
+in the repo forever. It's a feature of the deduplication: it writes only new data
 to repository, and compression is done on writes. Whatever has already been
 written stays in repository as-is.
 
 [Qemu images]
 
-It is generally good idea to fill virtual disks with zeros from time to time.
+It is generally a good idea to fill virtual disks with zeros from time to time.
 This will effect in smaller images, as zeros are compressible very well. :-)
 In Windows guests you may use sdelete.exe -z.
 In Linux consider using sfill.
@@ -336,12 +337,12 @@ In Linux consider using sfill.
 
 In order to speed up backup process set BORG_FILES_CACHE_TTL accordingly.
 Generally it is good idea to set it to at least 2-3 times more than the number
-of vm's you are going store in repository.
+of VMs you are going store in repository.
 Read this: https://borgbackup.readthedocs.io/en/stable/faq.html#it-always-chunks-all-my-files-even-unchanged-ones
 
-[ACL's]
+[ACLs]
 
-Consider setting "backup=0" on all mountpoints with ACL's enabled and store
+Consider setting "backup=0" on all mountpoints with ACLs enabled and store
 these mountpoints in separate archives (might be in the same repository).
 This will make your life easier on restore.
 Note that separate backups of particular mountpoints will be done on different
