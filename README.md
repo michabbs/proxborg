@@ -1,3 +1,6 @@
+NOTE: With release of Proxmox Backup Server this project became obsolete and is **not maintained** anymore.
+You may still use it, but I suggest PBS instead! PBS is superior in each field. :-)
+
 # PREREQUISITES
 
 This script should be run as root.
